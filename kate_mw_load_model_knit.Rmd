@@ -1,0 +1,175 @@
+---
+title: "Midwest Load Model"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r error=TRUE}
+
+##load important packages
+require(deSolve)
+library(lme4)
+library(plotrix)
+library(ggplot2)
+library(reshape2)
+library(reshape)
+library(brglm)
+library(MASS)
+library(boot)
+library(bbmle)
+library(gridExtra)
+library(knitr)
+```
+
+```{r error=TRUE}
+
+##params##
+#example - read in data to determine mean, sd
+bins=200
+x_s=seq(0,5,length=bins) #x value of rectangle
+h_x=dnorm(x_s,mean=2.5,sd=1) #height of rectangle#integral of the distance b/t xi and next xi2 for a gamma dist w/ whatever shape and rate params i choose
+plot(x_s,h_x)
+h_x=h_x[is.finite(h_x)] 
+sum(h_x)
+
+ic2=NA;ic=NA
+bins=200
+num.step=NA
+num.step=seq(0,5, length=bins)
+
+
+#integrate each rectangle to get the frac of population in each bin
+for (i in 1:length(num.step)){
+  ic=integrate(dnorm,num.step[i],num.step[i+1],mean=2.5,sd=1)$value
+  ic2=c(ic2,ic)
+}
+#will produce error message because of last block, but works
+
+#```
+num.step[is.na(ic2)]=NA
+ic2 <- ic2[!is.na(ic2)]
+num.step <- num.step[!is.na(num.step)]
+
+
+sum(ic2,na.rm=T);length(ic2)
+
+#length of q_x will be the same as x_mids, and sum of q_x*x equal 1
+#s_start will equal q_x
+min_size=min(num.step)
+max_size=max(num.step)
+# Set the edges of the discretized kernel (the edges of the rectangles in the distribution)
+bins=bins-1
+bnd = min_size+c(0:bins)*(max_size-min_size) / bins
+
+# Set the midpoints of the discretizing kernel. Using midpoint rule for evaluation
+#these are the midpoints - the y's you will use for susceptibility
+y_e = 0.5 * (bnd[1:bins] + bnd[2:(bins + 1)])
+y_b = 0.5 * (bnd[1:bins] + bnd[2:(bins + 1)])
+
+
+# Width of cells
+h_e = y_e[2] - y_e[1]
+h_b = y_b[2] - y_b[1]
+
+init_loads=ic2
+
+sum(init_loads)
+
+plot(y_e,init_loads)
+plot(y_b,init_loads*100)
+
+```
+
+Now code the model and ODES:
+```{r cars}
+
+##heterogeneous model in continuous times
+si.het.model <- function (t, x, params) {
+  S_t <- x[1]
+  I_t <- x[2:200]#:3002
+  E_t<- x[201]
+  C_t<- x[202:400]
+  ## now extract the parameters
+  beta_sc <- params["beta_sc"]
+  beta_si <- params["beta_si"]
+  #right now, growth isn't incorporated, all reflected in starting load..
+  #growth <- params["growth"]
+  alpha <- params["alpha"]
+  imm_s <- params["imm"]
+  imm_i <- params["imm2"]#immigration of infected bat
+  c_scalar <-params["c_scalar"]
+  ## now code the model equations
+  ##need to fix C_t - needs to be proportion
+  dS.dt <- -(
+    sum(y_b*beta_si*sum(I_t)*S_t)+
+    sum(y_e*c_scalar*beta_sc*S_t*((sum(C_t)/(sum(C_t)+E_t))))
+    )+
+    (imm_s*(S_t+sum(I_t)))
+  
+  dI.dt <- (
+    (y_b*beta_si*(I_t)*S_t)+#bat to bat - based on load
+    (y_e*beta_sc*c_scalar*S_t*(sum(C_t)/(sum(C_t)+E_t)))+#bat to environment - based on load
+      (imm_i*(S_t+sum(I_t)))-
+      (alpha*I_t*y_b)#immigration of infecteds
+  )  
+  #environment
+  dE.dt <- -sum(beta_sc*y_b*(I_t)*(1-(sum(C_t)/(sum(C_t)+E_t))))
+  dC.dt <- beta_sc*y_b*(I_t)*(1-(sum(C_t)/(sum(C_t)+E_t)))
+  
+  #dI.dt <- sum(y*beta*I_t*V_t)-gamma*I_t-alpha*I_t#+(y*beta*sum(I_t)*S_t))
+  
+  dxdt <- c(dS.dt,dI.dt,dE.dt,dC.dt)#,dN.dt#dS.dt,
+  ## return result as a list!
+  list(dxdt)
+}
+```
+
+Now, run the model.
+
+```{r init}
+##. DESCRIBE STARTING CONDITIONS AND RUN MODEL
+#Need to run these starting conditions if using analytical solution
+N_I=50
+S_0=50
+I_0=init_loads*N_I #number of individuals in each susceptibility class
+sum(I_0, na.rm=T)
+N_I=50
+E_0=50
+C_0=init_loads*N_I #number of contaminated areas
+sum(C_0, na.rm=T)
+
+
+
+times<- seq(from=1, to=50, by=.1)
+xstart <-c(S_t=S_0,I_t=I_0,E_t=E_0,C_t=C_0)#S_t=S_0,
+#s will equal q_x,
+#initial params
+params <- c( beta_sc=.00001,
+             beta_si=.00001,
+             alpha=.00001,
+             imm_i=.00001,
+             imm_s=.00001,
+             c_scalar=.00001)
+
+c_scalar=.00001;imm_s=.00001;imm_i=.00001;alpha=.00001;beta_si=.00001;beta_sc=.00001
+
+out <- ode(
+  func=si.het.model,
+  y=xstart,
+  times=times,
+  parms=params
+)
+```
+The ODE solver ran, and no error messages
+
+```{r model out}
+
+out=as.data.frame(out)
+outplot=melt(out,id.var="time")
+head(outplot)
+
+```
+The output makes no sense, and the values never ran past initialization.
